@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "history/history_message_selection.h"
+
 class HistoryItem;
 
 namespace HistoryView {
@@ -22,7 +24,10 @@ enum class CursorState : char {
 	None,
 	Text,
 	Date,
+	Enlarge,
 	Forwarded,
+	FromPhoto,
+	LogAdminService,
 };
 
 struct TextState {
@@ -49,12 +54,22 @@ struct TextState {
 	FullMsgId itemId;
 	CursorState cursor = CursorState::None;
 	ClickHandlerPtr link;
-	bool afterSymbol = false;
-	bool customTooltip = false;
 	uint16 symbol = 0;
+	bool afterSymbol = false;
+	MessageSelectionEndpoint selectionCursor;
+	bool overMessageText = false;
+	bool customTooltip = false;
+	bool horizontalScroll = false;
 	QString customTooltipText;
 
 };
+
+void SyncFlatSelectionCursor(not_null<TextState*> state);
+void SetTextStatePosition(
+	not_null<TextState*> state,
+	uint16 symbol,
+	bool afterSymbol);
+void AddTextStateOffset(not_null<TextState*> state, uint16 offset);
 
 struct StateRequest {
 	Ui::Text::StateRequest::Flags flags = Ui::Text::StateRequest::Flag::LookupLink;
@@ -63,6 +78,7 @@ struct StateRequest {
 		result.flags = flags;
 		return result;
 	}
+	bool onlyMessageText = false;
 };
 
 enum class InfoDisplayType : char {
@@ -70,5 +86,9 @@ enum class InfoDisplayType : char {
 	Image,
 	Background,
 };
+
+[[nodiscard]] not_null<HistoryItem*> LookupItemByPoint(
+	not_null<Element*> view,
+	QPoint itemPoint);
 
 } // namespace HistoryView

@@ -10,10 +10,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_text_entities.h"
 #include "data/data_document.h"
 #include "inline_bots/inline_bot_result.h"
+#include "iv/iv_rich_page.h"
 #include "storage/localstorage.h"
 #include "lang/lang_keys.h"
 #include "history/history.h"
-#include "history/history_message.h"
+#include "history/history_item.h"
 #include "data/data_channel.h"
 #include "ui/text/format_values.h" // Ui::FormatPhone
 
@@ -28,45 +29,69 @@ QString SendData::getLayoutDescription(const Result *owner) const {
 	return owner->_description;
 }
 
-void SendDataCommon::addToHistory(
+not_null<HistoryItem*> SendDataCommon::makeMessage(
 		const Result *owner,
 		not_null<History*> history,
-		MessageFlags flags,
-		MsgId msgId,
-		PeerId fromId,
-		TimeId date,
-		UserId viaBotId,
-		MsgId replyToId,
-		const QString &postAuthor,
-		const MTPReplyMarkup &markup) const {
-	auto fields = getSentMessageFields();
-	if (replyToId) {
-		flags |= MessageFlag::HasReplyInfo;
+		HistoryItemCommonFields &&fields) const {
+	auto distinct = getSentMessageFields();
+	if (fields.replyTo) {
+		fields.flags |= MessageFlag::HasReplyInfo;
 	}
-	history->addNewLocalMessage(
-		msgId,
-		flags,
-		viaBotId,
-		replyToId,
-		date,
-		fromId,
-		postAuthor,
-		std::move(fields.text),
-		std::move(fields.media),
-		markup);
+	return history->makeMessage(
+		std::move(fields),
+		std::move(distinct.text),
+		std::move(distinct.media));
 }
 
-QString SendDataCommon::getErrorOnSend(
+Data::SendError SendDataCommon::getErrorOnSend(
 		const Result *owner,
 		not_null<History*> history) const {
-	const auto error = Data::RestrictionError(
-		history->peer,
-		ChatRestriction::SendMessages);
-	return error.value_or(QString());
+	const auto type = ChatRestriction::SendOther;
+	return Data::RestrictionError(history->peer, type);
 }
 
 SendDataCommon::SentMessageFields SendText::getSentMessageFields() const {
 	return { .text = { _message, _entities } };
+}
+
+SendRichMessage::SendRichMessage(
+	not_null<Main::Session*> session,
+	const MTPRichMessage &message)
+: SendData(session)
+, _page(Iv::ParseRichPage(session, message))
+, _summary(Iv::FlattenRichPageSummary(_page)) {
+}
+
+bool SendRichMessage::isValid() const {
+	return _page && !_page->blocks.empty();
+}
+
+not_null<HistoryItem*> SendRichMessage::makeMessage(
+		const Result *owner,
+		not_null<History*> history,
+		HistoryItemCommonFields &&fields) const {
+	if (fields.replyTo) {
+		fields.flags |= MessageFlag::HasReplyInfo;
+	}
+	const auto item = history->makeMessage(
+		std::move(fields),
+		_summary,
+		MTP_messageMediaEmpty());
+	item->setRichPage(_page);
+	return item;
+}
+
+Data::SendError SendRichMessage::getErrorOnSend(
+		const Result *owner,
+		not_null<History*> history) const {
+	const auto type = ChatRestriction::SendOther;
+	return Data::RestrictionError(history->peer, type);
+}
+
+QString SendRichMessage::getLayoutDescription(const Result *owner) const {
+	return _summary.text.isEmpty()
+		? SendData::getLayoutDescription(owner)
+		: _summary.text;
 }
 
 SendDataCommon::SentMessageFields SendGeo::getSentMessageFields() const {
@@ -77,18 +102,17 @@ SendDataCommon::SentMessageFields SendGeo::getSentMessageFields() const {
 				| (_proximityNotificationRadius
 					? Flag::f_proximity_notification_radius
 					: Flag(0))),
-			_location.toMTP(),
+			_location->toMTP(),
 			MTP_int(_heading.value_or(0)),
 			MTP_int(*_period),
 			MTP_int(_proximityNotificationRadius.value_or(0))) };
 	}
-	return { .media = MTP_messageMediaGeo(_location.toMTP()) };
+	return { .media = MTP_messageMediaGeo(_location->toMTP()) };
 }
 
 SendDataCommon::SentMessageFields SendVenue::getSentMessageFields() const {
-	const auto venueType = QString();
 	return { .media = MTP_messageMediaVenue(
-		_location.toMTP(),
+		_location->toMTP(),
 		MTP_string(_title),
 		MTP_string(_address),
 		MTP_string(_provider),
@@ -113,116 +137,52 @@ QString SendContact::getLayoutDescription(const Result *owner) const {
 	return result;
 }
 
-void SendPhoto::addToHistory(
+not_null<HistoryItem*> SendPhoto::makeMessage(
 		const Result *owner,
 		not_null<History*> history,
-		MessageFlags flags,
-		MsgId msgId,
-		PeerId fromId,
-		TimeId date,
-		UserId viaBotId,
-		MsgId replyToId,
-		const QString &postAuthor,
-		const MTPReplyMarkup &markup) const {
-	history->addNewLocalMessage(
-		msgId,
-		flags,
-		viaBotId,
-		replyToId,
-		date,
-		fromId,
-		postAuthor,
+		HistoryItemCommonFields &&fields) const {
+	return history->makeMessage(
+		std::move(fields),
 		_photo,
-		{ _message, _entities },
-		markup);
+		TextWithEntities{ _message, _entities });
 }
 
-QString SendPhoto::getErrorOnSend(
+Data::SendError SendPhoto::getErrorOnSend(
 		const Result *owner,
 		not_null<History*> history) const {
-	const auto error = Data::RestrictionError(
-		history->peer,
-		ChatRestriction::SendMedia);
-	return error.value_or(QString());
+	const auto type = ChatRestriction::SendPhotos;
+	return Data::RestrictionError(history->peer, type);
 }
 
-void SendFile::addToHistory(
+not_null<HistoryItem*> SendFile::makeMessage(
 		const Result *owner,
 		not_null<History*> history,
-		MessageFlags flags,
-		MsgId msgId,
-		PeerId fromId,
-		TimeId date,
-		UserId viaBotId,
-		MsgId replyToId,
-		const QString &postAuthor,
-		const MTPReplyMarkup &markup) const {
-	history->addNewLocalMessage(
-		msgId,
-		flags,
-		viaBotId,
-		replyToId,
-		date,
-		fromId,
-		postAuthor,
+		HistoryItemCommonFields &&fields) const {
+	return history->makeMessage(
+		std::move(fields),
 		_document,
-		{ _message, _entities },
-		markup);
+		TextWithEntities{ _message, _entities });
 }
 
-QString SendFile::getErrorOnSend(
+Data::SendError SendFile::getErrorOnSend(
 		const Result *owner,
 		not_null<History*> history) const {
-	const auto errorMedia = Data::RestrictionError(
-		history->peer,
-		ChatRestriction::SendMedia);
-	const auto errorStickers = Data::RestrictionError(
-		history->peer,
-		ChatRestriction::SendStickers);
-	const auto errorGifs = Data::RestrictionError(
-		history->peer,
-		ChatRestriction::SendGifs);
-	return errorMedia
-		? *errorMedia
-		: (errorStickers && (_document->sticker() != nullptr))
-		? *errorStickers
-		: (errorGifs
-			&& _document->isAnimation()
-			&& !_document->isVideoMessage())
-		? *errorGifs
-		: QString();
+	const auto type = _document->requiredSendRight();
+	return Data::RestrictionError(history->peer, type);
 }
 
-void SendGame::addToHistory(
+not_null<HistoryItem*> SendGame::makeMessage(
 		const Result *owner,
 		not_null<History*> history,
-		MessageFlags flags,
-		MsgId msgId,
-		PeerId fromId,
-		TimeId date,
-		UserId viaBotId,
-		MsgId replyToId,
-		const QString &postAuthor,
-		const MTPReplyMarkup &markup) const {
-	history->addNewLocalMessage(
-		msgId,
-		flags,
-		viaBotId,
-		replyToId,
-		date,
-		fromId,
-		postAuthor,
-		_game,
-		markup);
+		HistoryItemCommonFields &&fields) const {
+	return history->makeMessage(std::move(fields), _game);
 }
 
-QString SendGame::getErrorOnSend(
+Data::SendError SendGame::getErrorOnSend(
 		const Result *owner,
 		not_null<History*> history) const {
-	const auto error = Data::RestrictionError(
-		history->peer,
-		ChatRestriction::SendGames);
-	return error.value_or(QString());
+	const auto type = ChatRestriction::SendGames;
+	return Data::RestrictionError(history->peer, type);
 }
 
 SendDataCommon::SentMessageFields SendInvoice::getSentMessageFields() const {
